@@ -3,8 +3,10 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"net"
 	"os"
 	"io"
+	"sync/atomic"
 )
 
 func index(w http.ResponseWriter, r *http.Request) {
@@ -23,34 +25,66 @@ func index(w http.ResponseWriter, r *http.Request) {
 
 //global info of the server
 type SrvInfo struct {
-	NumConnections int
-	NumIps int
+	NumConnections int64
+	//set of addresses
+	Addresses map[string]struct{}
 }
 
 type InfoHandler func(*SrvInfo, http.ResponseWriter, *http.Request)
 
-//use closures to capture info in each handler
-func NewInfoHandler(info *SrvInfo, ih InfoHandler) http.HandlerFunc {
+//serve number of connections to the server
+func NumConHandler(info *SrvInfo) http.HandlerFunc {
 	return func(rw http.ResponseWriter, r *http.Request) {
-		ih(info, rw, r)
+		fmt.Fprintf(rw, "Number of Connections: %d", atomic.LoadInt64(&(info.NumConnections)))
 	}
 }
 
-func NumConnsHandler(info *SrvInfo, rw http.ResponseWriter, r *http.Request) {
-	fmt.Fprintf(rw, "Number of Connections: %d", info.NumConnections)
+//serve adddresses 
+func AddrHandler(info *SrvInfo) http.HandlerFunc {
+	return func(rw http.ResponseWriter, r *http.Request) {
+		//Reading here
+		addr :=  info.Addresses
+		addrS := make([]string, len(addr))
+		for k := range addr {
+			addrS = append(addrS, k)
+		}
+		fmt.Fprintf(rw, "Addresses: %v", addrS)
+	}
+}
+
+//callback to use when connections change state
+func ConnMetrics(srv *SrvInfo) func(net.Conn, http.ConnState) {
+	return func(conn net.Conn, connState http.ConnState) {
+		switch connState {
+			case http.StateNew:
+				atomic.AddInt64(&(srv.NumConnections), 1)
+				if _, ok := srv.Addresses[conn.RemoteAddr().String()]; !ok {
+					srv.Addresses[conn.RemoteAddr().String()] = struct{}{}
+				}
+			case http.StateClosed:
+				atomic.AddInt64(&(srv.NumConnections), -1)
+				delete(srv.Addresses, conn.RemoteAddr().String())
+		}
+	}
 }
 
 func run() error {
 	//will be shared among handlers so be careful
 	//with race conditions
-	info := new(SrvInfo)
+	info := &SrvInfo{
+		NumConnections: 0,
+		Addresses: make(map[string]struct{}),
+	}
 	m := http.NewServeMux()
 	m.HandleFunc("GET /{$}", index)
-	m.Handle("GET /numConns",
-		NewInfoHandler(info, NumConnsHandler))
+	m.HandleFunc("GET /numConns",
+		NumConHandler(info))
+	m.HandleFunc("GET /addresses",
+		AddrHandler(info))
 	srv := &http.Server{
-		Addr: "localhost:5000",
+		Addr: "localhost:55555",
 		Handler: m,
+		ConnState: ConnMetrics(info),
 	}
 	if err := srv.ListenAndServe(); err != nil {
 		return err
