@@ -5,10 +5,10 @@
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<script src="https://unpkg.com/htmx.org@2.0.2" 
 	crossorigin="anonymous"></script>
+	<script src="https://unpkg.com/htmx-ext-sse@2.2.2/sse.js"></script>
 	<title>User Tracker</title>
 </head>
-<body>
-	<h1 hx-get="/numConns" hx-trigger="load, every 200ms"></h1>
-	<h1 hx-get="/addresses" hx-trigger="load, every 200ms"></h1>
+<body >
+	<h1 hx-ext="sse" sse-connect="/coninfo" sse-swap="conChange"></h1>
 </body>
 </html>
