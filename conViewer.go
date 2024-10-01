@@ -1,6 +1,7 @@
 package conviewer
 
 import (
+	"strings"
 	"fmt"
 	"net"
 	"net/http"
@@ -28,6 +29,29 @@ type ConMsg struct {
 	//set of addresses
 	activeCons map[string] struct{}
 	idleCons map[string] struct{}
+}
+
+//default implementation of
+//sse.SseSerializable
+func (msg *ConMsg) Event() string {
+	return "conUpdate"
+}
+
+func (msg *ConMsg) Data() string {
+	//TODO use templating for nice htmx
+	//Also think of whether I want different events
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Number of Connections: %d <br/>", msg.numCons))
+	sb.WriteString("ActiveConnections:")
+	for k := range msg.activeCons {
+		sb.WriteString(" " + k)
+	} 
+	sb.WriteString(" <br/>")
+	sb.WriteString("IdleConnections:")
+	for k := range msg.idleCons {
+		sb.WriteString(" " + k)
+	} 
+	return sb.String()
 }
 
 //Listen to connection changes coming from the notifChan
@@ -70,29 +94,9 @@ func listen(notifChan chan conUpdateMsg, msgChan chan *ConMsg) {
 	}
 }
 
-//func (cm *ConnManager) CreateMsg() string {
-	//var msg string
-	////TODO use templating for nice htmx
-	////Also think of whether I want different events
-	//var sb strings.Builder
-	//sb.WriteString(fmt.Sprintf("Number of Connections: %d <br/>", cm.numCons))
-	//sb.WriteString("ActiveConnections:")
-	//for k := range cm.activeCons {
-		//sb.WriteString(" " + k)
-	//} 
-	//sb.WriteString(" <br/>")
-	//sb.WriteString("IdleConnections:")
-	//for k := range cm.idleCons {
-		//sb.WriteString(" " + k)
-	//} 
-	//msg = fmt.Sprintf("event: conChange\ndata: %s\n\n", sb.String())
-	//return msg
-//}
-
-
 //callback to use when connections change state
 //will notify the conChan a new connection has occured
-func ConnMetrics(notifChan chan conUpdateMsg) func(net.Conn, http.ConnState) {
+func connMetrics(notifChan chan conUpdateMsg) func(net.Conn, http.ConnState) {
 	return func(conn net.Conn, connState http.ConnState) {
 		//wrap this in a go routine to be non blocking?
 		//If I do that, the connection notifications might be out of sync.
@@ -108,9 +112,9 @@ func ConnMetrics(notifChan chan conUpdateMsg) func(net.Conn, http.ConnState) {
 //notifications will be sent to the passed in channel
 func ObserveServer(srv *http.Server, msgChan chan *ConMsg) {
 	notifChan := make(chan conUpdateMsg)
-	srv.ConnState = ConnMetrics(notifChan)
+	srv.ConnState = connMetrics(notifChan)
 	//clientChan to subscribe new clients to the handler
-	go listen(notifChan, msgChan)
+	listen(notifChan, msgChan)
 }
 
 

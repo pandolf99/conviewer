@@ -9,19 +9,30 @@ import (
 	"fmt"
 )
 
-type sseSerializable interface {
+type SseSerializable interface {
 	Event() string
 	Data() string
 }
 
-func Serialize(s sseSerializable) string {
+//convert ch T to chan SseSerializable
+func WrapChan[T SseSerializable](ch chan T) chan SseSerializable {
+	ret := make(chan SseSerializable)
+	go func() {
+		for m := range ch {
+			ret <- m
+		}
+	}()
+	return ret
+}
+
+func serialize(s SseSerializable) string {
 	return fmt.Sprintf(
 		"event: %s\ndata: %s\n\n",
 		s.Event(), s.Data())
 }
 
 type sseClient struct {
-	msgChan chan sseSerializable
+	msgChan chan SseSerializable
 	//notifies when client closes connection
 	//necessary since sse is only 1 sided communication
 	unsubChan chan struct{}
@@ -42,7 +53,7 @@ func subscribe(
 		rw.Header().Set("Connection", "keep-alive")
 		//subscribe this client
 		cli := sseClient{
-			msgChan: make(chan sseSerializable),
+			msgChan: make(chan SseSerializable),
 			unsubChan: make(chan struct{}),
 		}
 		subChan <- cli
@@ -58,7 +69,7 @@ func subscribe(
 		for {
 			select {
 			case msg := <- cli.msgChan:
-				fmt.Fprint(rw, Serialize(msg))
+				fmt.Fprint(rw, serialize(msg))
 				rw.(http.Flusher).Flush()
 			//signals client has been succesfully removed
 			//from subscribers and can safely exit
@@ -72,20 +83,15 @@ func subscribe(
 
 type sseServer struct {
 	//source of notifications
-	msgChan chan sseSerializable
+	msgChan chan SseSerializable
 	//set of clients
 	clients map[sseClient] struct{}
 	//channel to unsubscribe clients
 	unsubChan chan sseClient
 	//channel to subscribe 
 	subChan chan sseClient
-	//mux to support multiple sse handlers
-	//in the future
-	mux *http.ServeMux
-}
-
-func (srv sseServer) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
-	srv.mux.ServeHTTP(rw, r)
+	//embed http server
+	*http.Server
 }
 
 func (srv sseServer) listen() {
@@ -104,17 +110,34 @@ func (srv sseServer) listen() {
 	}
 }
 
+//Start listening for messages in the msgChan 
+//and start serving at address
+func (srv sseServer) ListenAndServe() error {
+	go srv.listen()
+	err := srv.Server.ListenAndServe()
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 //new sse server
-func NewServer(msgChan chan sseSerializable) sseServer {
-	srv := sseServer{
+//listens to MsgChan for notifications
+//serves clients notifications at addr/
+func NewServer(msgChan chan SseSerializable, addr string) sseServer {
+	mux := http.NewServeMux()
+	srv := &http.Server{
+		Addr: addr,
+		Handler: mux,
+	}
+	sse := sseServer{
 		msgChan: msgChan,
 		clients: make(map[sseClient]struct{}),
 		unsubChan: make(chan sseClient),
 		subChan: make(chan sseClient),
+		Server: srv,
 	}
-	mux := http.NewServeMux()
-	mux.Handle("GET /{$}", subscribe(srv.subChan, srv.unsubChan))
-	srv.mux = mux
-	go srv.listen()
-	return srv
+	//main handler of sse
+	mux.Handle("GET /{$}", subscribe(sse.subChan, sse.unsubChan))
+	return sse
 }
