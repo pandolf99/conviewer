@@ -9,10 +9,6 @@ import (
 	"fmt"
 )
 
-type SseSerializable interface {
-	Event() string
-	Data() string
-}
 
 //convert ch T to chan SseSerializable
 func WrapChan[T SseSerializable](ch chan T) chan SseSerializable {
@@ -25,12 +21,8 @@ func WrapChan[T SseSerializable](ch chan T) chan SseSerializable {
 	return ret
 }
 
-func serialize(s SseSerializable) string {
-	return fmt.Sprintf(
-		"event: %s\ndata: %s\n\n",
-		s.Event(), s.Data())
-}
 
+//internal representation of a client for the server.
 type sseClient struct {
 	msgChan chan SseSerializable
 	//notifies when client closes connection
@@ -69,7 +61,7 @@ func subscribe(
 		for {
 			select {
 			case msg := <- cli.msgChan:
-				fmt.Fprint(rw, serialize(msg))
+				fmt.Fprint(rw, Serialize(msg))
 				rw.(http.Flusher).Flush()
 			//signals client has been succesfully removed
 			//from subscribers and can safely exit
