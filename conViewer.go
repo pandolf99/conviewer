@@ -1,15 +1,14 @@
 package conviewer
 
 import (
-	"strings"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
 )
 
-
-//simple loggger for debugging
+// simple loggger for debugging
 func simpleLogger(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(os.Stderr, "Request to %s\n", r.URL.Path)
@@ -18,48 +17,62 @@ func simpleLogger(h http.Handler) http.Handler {
 	})
 }
 
-//single connection update
+// single connection update
 type conUpdateMsg struct {
-	addr net.Addr
+	addr      net.Addr
 	connState http.ConnState
 }
 
 type ConMsg struct {
 	numCons int
 	//set of addresses
-	activeCons map[string] struct{}
-	idleCons map[string] struct{}
+	activeCons map[string]struct{}
+	idleCons   map[string]struct{}
 }
 
-//default implementation of
-//sse.SseSerializable
+// use a custom marshaler to turn the map into an array
+// could do it from scratch to reduce cost of making
+// the slices. But good for now.
+func (msg *ConMsg) MarshalJSON() ([]byte, error) {
+	activeCons := make([]string, 0, len(msg.activeCons))
+	for k := range msg.activeCons {
+		activeCons = append(activeCons, k)
+	}
+	idleCons := make([]string, 0, len(msg.idleCons))
+	for k := range msg.idleCons {
+		idleCons = append(idleCons, k)
+	}
+	s := struct {
+		NumCons    int
+		ActiveCons []string
+		IdleCons   []string
+	}{
+		NumCons:    msg.numCons,
+		ActiveCons: activeCons,
+		IdleCons:   idleCons,
+	}
+	return json.Marshal(s)
+}
+
+//implement sse.SseSerializable
 func (msg *ConMsg) Event() string {
 	return "conUpdate"
 }
 
+//default is to produce JSON
 func (msg *ConMsg) Data() string {
-	//TODO use templating for nice htmx
-	//Also think of whether I want different events
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Number of Connections: %d <br/>", msg.numCons))
-	sb.WriteString("ActiveConnections:")
-	for k := range msg.activeCons {
-		sb.WriteString(" " + k)
-	} 
-	sb.WriteString(" <br/>")
-	sb.WriteString("IdleConnections:")
-	for k := range msg.idleCons {
-		sb.WriteString(" " + k)
-	} 
-	return sb.String()
+	//no need to check for error as
+	//we control the struct we are marshalling
+	s, _ := json.Marshal(msg)
+	return string(s)
 }
 
 //Listen to connection changes coming from the notifChan
 //keep state of the server here
 func listen(notifChan chan conUpdateMsg, msgChan chan *ConMsg) {
 	var numCons int
-	activeCons := make(map[string] struct{})
-	idleCons := make(map[string] struct{})
+	activeCons := make(map[string]struct{})
+	idleCons := make(map[string]struct{})
 	for msg := range notifChan {
 		addr := msg.addr.String()
 		switch msg.connState {
@@ -78,9 +91,9 @@ func listen(notifChan chan conUpdateMsg, msgChan chan *ConMsg) {
 		}
 		//send update to sse listener
 		sseMsg := &ConMsg{
-			numCons: numCons,
+			numCons:    numCons,
 			activeCons: activeCons,
-			idleCons: idleCons,
+			idleCons:   idleCons,
 		}
 		//will block until MsgChan is ready to read
 		//user should start a go routine to read from the channel
@@ -94,8 +107,8 @@ func listen(notifChan chan conUpdateMsg, msgChan chan *ConMsg) {
 	}
 }
 
-//callback to use when connections change state
-//will notify the conChan a new connection has occured
+// callback to use when connections change state
+// will notify the conChan a new connection has occured
 func connMetrics(notifChan chan conUpdateMsg) func(net.Conn, http.ConnState) {
 	return func(conn net.Conn, connState http.ConnState) {
 		//wrap this in a go routine to be non blocking?
@@ -107,14 +120,11 @@ func connMetrics(notifChan chan conUpdateMsg) func(net.Conn, http.ConnState) {
 	}
 }
 
-
-//Server middleware to observe connections to the server
-//notifications will be sent to the passed in channel
+// Server middleware to observe connections to the server
+// notifications will be sent to the passed in channel
 func ObserveServer(srv *http.Server, msgChan chan *ConMsg) {
 	notifChan := make(chan conUpdateMsg)
 	srv.ConnState = connMetrics(notifChan)
 	//clientChan to subscribe new clients to the handler
 	listen(notifChan, msgChan)
 }
-
-
