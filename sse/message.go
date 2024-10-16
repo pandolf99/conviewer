@@ -11,17 +11,21 @@ var (
 
 //TODO make SSE messages conform to the HTML5 standard
 
-//For a message to be SseSerializable
-//it should have event and data fields
-//this is an interface in case the user 
-//wants to pass around its own struct
-//through the sse server
+//to send events from the server to 
+//the clients, a message only has to be serializable
 type SseSerializable interface {
 	Event() []byte
 	Data() []byte
+}
+
+//to recieve events as a client from the server,
+//there should be a place to store them
+type SseUnserializable interface {
 	SetEvent([]byte)
 	SetData([]byte)
 }
+
+
 
 func Serialize(s SseSerializable) []byte {
 	var buff bytes.Buffer 
@@ -30,6 +34,9 @@ func Serialize(s SseSerializable) []byte {
 	buff.WriteRune('\n')
 	buff.WriteString("data:")
 	buff.Write(bytes.TrimSpace(s.Data()))
+	//delimits end of message
+	buff.Write([]byte{'\n'})
+	buff.Write([]byte{'\n'})
 	buff.Write([]byte{'\n'})
 	return buff.Bytes()
 }
@@ -38,7 +45,7 @@ func Serialize(s SseSerializable) []byte {
 //Unserialize data into s
 //throws an error if data does not follow
 //sse message format
-func Unserialize(msg []byte, s SseSerializable) error {
+func Unserialize(msg []byte, s SseUnserializable) error {
 	msgSlice := bytes.SplitN(msg, []byte{'\n'}, 2)
 	if len(msgSlice) != 2 {
 		return ErrNonSerializable
@@ -58,7 +65,7 @@ func Unserialize(msg []byte, s SseSerializable) error {
 	return nil
 }
 
-//default implenentation of a SseSeriablizable
+//default implenentation of 
 //provided by the package
 type SseMsg struct {
 	event []byte
@@ -70,7 +77,7 @@ func (m *SseMsg) Event() []byte {
 }
 
 func (m *SseMsg) SetEvent(event []byte) {
-	m.event = event
+	m.event = append([]byte{}, event...)
 }
 
 func (m *SseMsg) Data() []byte {
@@ -78,7 +85,7 @@ func (m *SseMsg) Data() []byte {
 }
 
 func (m *SseMsg) SetData(data []byte) {
-	 m.data = data
+	m.data = append([]byte{}, data...)
 }
 
 

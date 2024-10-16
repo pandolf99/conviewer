@@ -17,8 +17,8 @@ func sseHandler(rw http.ResponseWriter, r *http.Request) {
 	sseMsg.SetEvent([]byte("myEvent"))
 	sseMsg.SetData([]byte("Hello World"))
 	msg := Serialize(&sseMsg)
-	ticker := time.NewTicker(time.Millisecond * 200)
-	timer := time.NewTimer(time.Second * 3)
+	ticker := time.NewTicker(time.Second)
+	timer := time.NewTimer(time.Second * 5)
 	for {
 		select {
 			case <-ticker.C:
@@ -36,7 +36,7 @@ func TestClient(t *testing.T) {
 	defer ts.Close()
 	var cli Client 
 	ch, err := cli.Subscribe(ts.URL)
-	t.Log("Made Request")
+	t.Logf("Made Request to %s", ts.URL)
 	if err != nil {
 		t.Log(err)
 		t.Fail()

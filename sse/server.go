@@ -56,12 +56,17 @@ func subscribe(
 		ctx := r.Context()
 		go func() {
 			<-ctx.Done()
+			fmt.Printf("context is done: %s\n", ctx.Err())
 			unsubChan <- cli
 		}()
 		for {
 			select {
 			case msg := <- cli.msgChan:
-				fmt.Fprint(rw, Serialize(msg))
+				ser := Serialize(msg)
+				_, err := rw.Write(ser)
+				if err != nil {
+					fmt.Println(err)
+				}
 				rw.(http.Flusher).Flush()
 			//signals client has been succesfully removed
 			//from subscribers and can safely exit
@@ -84,6 +89,7 @@ type sseServer struct {
 	subChan chan sseClient
 	//embed http server
 	*http.Server
+	Mux *http.ServeMux
 }
 
 func (srv sseServer) listen() {
@@ -128,8 +134,10 @@ func NewServer(msgChan chan SseSerializable, addr string) sseServer {
 		unsubChan: make(chan sseClient),
 		subChan: make(chan sseClient),
 		Server: srv,
+		Mux: mux,
 	}
 	//main handler of sse
-	mux.Handle("GET /{$}", subscribe(sse.subChan, sse.unsubChan))
+	//should not register line here
+	mux.Handle("GET /coninfo", subscribe(sse.subChan, sse.unsubChan))
 	return sse
 }
