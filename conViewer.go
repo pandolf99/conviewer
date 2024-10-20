@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync"
 )
 
 // simple loggger for debugging
@@ -88,46 +89,6 @@ func (msg *ConMsg) Data() []byte {
 	return s
 }
 
-//Listen to connection changes coming from the notifChan
-//keep state of the server here
-func listen(notifChan chan conUpdateMsg, msgChan chan *ConMsg) {
-	var numCons int
-	activeCons := make(map[string]struct{})
-	idleCons := make(map[string]struct{})
-	for msg := range notifChan {
-		addr := msg.addr.String()
-		switch msg.connState {
-		case http.StateNew:
-			numCons++
-		case http.StateActive:
-			delete(idleCons, addr)
-			activeCons[addr] = struct{}{}
-		case http.StateIdle:
-			delete(activeCons, addr)
-			idleCons[addr] = struct{}{}
-		case http.StateClosed:
-			delete(idleCons, addr)
-			delete(activeCons, addr)
-			numCons--
-		}
-		//send update to sse listener
-		sseMsg := &ConMsg{
-			NumCons:    numCons,
-			ActiveCons: activeCons,
-			IdleCons:   idleCons,
-		}
-		//will block until MsgChan is ready to read
-		//user should start a go routine to read from the channel
-		//before firing up the observer
-		//And if this blocks then ConnMetrics will block
-		//Which is problematic
-		//but how to enforce it or make is safe?
-		//Maybe have somekind of default reader
-		//that gets overriden when a user starts listening.
-		msgChan <- sseMsg
-	}
-}
-
 // callback to use when connections change state
 // will notify the conChan a new connection has occured
 func connMetrics(notifChan chan conUpdateMsg) func(net.Conn, http.ConnState) {
@@ -141,11 +102,89 @@ func connMetrics(notifChan chan conUpdateMsg) func(net.Conn, http.ConnState) {
 	}
 }
 
-// Server middleware to observe connections to the server
-// notifications will be sent to the passed in channel
-func ObserveServer(srv *http.Server, msgChan chan *ConMsg) {
-	notifChan := make(chan conUpdateMsg)
-	srv.ConnState = connMetrics(notifChan)
-	//clientChan to subscribe new clients to the handler
-	listen(notifChan, msgChan)
+//keeps the state of the connections to the server
+type ConObserver struct {
+	srv *http.Server
+	numCons int
+	activeCons map[string]struct{}
+	idleCons map[string]struct{}
+	msgChan chan *ConMsg
+	notifChan chan conUpdateMsg
+	lock *sync.RWMutex  
 }
+
+//Returns an observer ready to observe the state,
+//starts listening to the server.
+//Srv must be started before calling the observer.
+//Otherwise data races might ensue.
+func NewObserver(srv *http.Server, msgChan chan *ConMsg) ConObserver {
+	notifChan := make(chan conUpdateMsg)
+	lck := new(sync.RWMutex)
+	srv.ConnState = connMetrics(notifChan)
+	return ConObserver{
+		srv: srv,
+		numCons: 0,
+		activeCons: make(map[string]struct{}),
+		idleCons: make(map[string]struct{}),
+		msgChan: msgChan,
+		notifChan: notifChan,
+		lock: lck,
+	}
+}
+
+//Listen to connection changes coming from the notifChan
+func (manager *ConObserver) Listen() {
+	for msg := range manager.notifChan {
+		manager.lock.Lock()
+		addr := msg.addr.String()
+		switch msg.connState {
+		case http.StateNew:
+			manager.numCons++
+		case http.StateActive:
+			delete(manager.idleCons, addr)
+			manager.activeCons[addr] = struct{}{}
+		case http.StateIdle:
+			delete(manager.activeCons, addr)
+			manager.idleCons[addr] = struct{}{}
+		case http.StateClosed:
+			delete(manager.idleCons, addr)
+			delete(manager.activeCons, addr)
+			manager.numCons--
+		}
+		manager.lock.Unlock()
+		//send update to sse listener
+		manager.lock.RLock()
+		sseMsg := &ConMsg{
+			NumCons:    manager.numCons,
+			ActiveCons: manager.activeCons,
+			IdleCons:   manager.idleCons,
+		}
+		manager.lock.RUnlock()
+		//will block until MsgChan is ready to read
+		//user should start a go routine to read from the channel
+		//before firing up the observer
+		//And if this blocks then ConnMetrics will block
+		//Which is problematic
+		//but how to enforce it or make is safe?
+		//Maybe have somekind of default reader
+		//that gets overriden when a user starts listening.
+		manager.msgChan <- sseMsg
+	}
+}
+
+//get the state of the server as a ConMsg
+//safe to call concurrently while listening
+//to updates
+func (observer *ConObserver) GetState() ConMsg {
+	observer.lock.RLock()
+	state := ConMsg{
+		NumCons: observer.numCons,
+		ActiveCons: observer.activeCons,
+		IdleCons: observer.idleCons,
+	}
+	observer.lock.RUnlock()
+	return state
+}
+
+
+

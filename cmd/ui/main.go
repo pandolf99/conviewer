@@ -51,6 +51,8 @@ func main() {
 	//must start the server before attaching the observer
 	go conSrv.ListenAndServe()
 	//start the observer
-	conviewer.ObserveServer(srv.Server, conCh)
+	observer := conviewer.NewObserver(srv.Server, conCh)
+	mux.HandleFunc("GET /constate", GetState(observer))
+	observer.Listen()
 }
 

@@ -28,21 +28,42 @@ func Index(w http.ResponseWriter, r *http.Request) {
 	w.Write(body)
 }
 
-func templateInfo(msg *sse.SseMsg) ([]byte, error) {
+func templateConMsg(conMsg conviewer.ConMsg) []byte {
+	var buff bytes.Buffer
+	buff.WriteString(fmt.Sprintf("Number of Connections: %d <br>", conMsg.NumCons))
+	buff.WriteString(fmt.Sprintf("Active Connections: %s <br>", conMsg.ActiveCons))
+	buff.WriteString(fmt.Sprintf("Idle Connections: %s", conMsg.IdleCons))
+	return buff.Bytes()
+}
+
+func templateConInfo(conMsg conviewer.ConMsg) []byte {
+	//hacky templating
+	//but ok for simple example
 	var buff bytes.Buffer 
+	s := `<h1
+		hx-ext="sse"
+		sse-connect="/ui/coninfo"
+		sse-swap="conUpdate"
+		hx-trigger="load">`
+	buff.WriteString(s)
+	buff.Write(templateConMsg(conMsg))
+	buff.WriteString("</h1>")
+	return buff.Bytes()
+}
+
+/*
+*/
+
+//extract conMsg from the sseMsg
+func extractMsg(msg *sse.SseMsg) (conviewer.ConMsg, error) {
 	conMsg := new(conviewer.ConMsg)
 	conMsg.ActiveCons = make(map[string]struct{})
 	conMsg.IdleCons = make(map[string]struct{})
 	err := json.Unmarshal(msg.Data(), conMsg)
 	if err != nil {
-		return nil, err
+		return *conMsg, err
 	}
-	//hacky templating
-	//make this nicer
-	buff.WriteString(fmt.Sprintf("<h1>Number of Connections: %d <br>", conMsg.NumCons))
-	buff.WriteString(fmt.Sprintf("Active Connections: %s <br>", conMsg.ActiveCons))
-	buff.WriteString(fmt.Sprintf("Idle Connections: %s </h1>", conMsg.IdleCons))
-	return buff.Bytes(), nil
+	return *conMsg, nil
 }
 
 //call here for updates
@@ -64,13 +85,14 @@ func UpdateHandler(addr string) http.HandlerFunc {
 			return 
 		}
 		for msg := range ch {
-			temp, err := templateInfo(msg)
+			conMsg, err := extractMsg(msg)
 			if err != nil {
 				fmt.Println(err)
 				return
 			}
+			template := templateConMsg(conMsg)
 			msg.SetEvent([]byte("conUpdate"))
-			msg.SetData(temp)
+			msg.SetData(template)
 			ser := sse.Serialize(msg)
 			rw.Header().Set("Content-Type", "text/event-stream")
 			rw.Header().Set("Cache-Control", "no-cache")
@@ -78,6 +100,14 @@ func UpdateHandler(addr string) http.HandlerFunc {
 			rw.Write(ser)
 			rw.(http.Flusher).Flush()
 		}
+	}
+}
+
+func GetState(observer conviewer.ConObserver) http.HandlerFunc {
+	return func(rw http.ResponseWriter, r *http.Request) {
+		template := templateConInfo(observer.GetState())
+		rw.Write(template)
+		return
 	}
 }
 

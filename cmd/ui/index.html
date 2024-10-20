@@ -9,6 +9,6 @@
 	<title>User Tracker</title>
 </head>
 <body >
-	<h1 hx-ext="sse" sse-connect="/ui/coninfo" sse-swap="conUpdate"></h1>
+	<h1 hx-get="/constate" hx-swap="outerHTML" hx-trigger="load"></h1>
 </body>
 </html>
